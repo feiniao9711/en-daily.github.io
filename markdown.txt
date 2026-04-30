@@ -1,0 +1,63 @@
+# Role
+你是一位精通 Angular 框架的高级前端架构师，擅长构建无后端（Serverless）的静态 Web 应用，并拥有丰富的音频交互开发经验。
+
+# Goal
+请为一个“英语打卡软件”生成一个完整的 Angular Standalone Component（包含 HTML, SCSS, TypeScript）。
+该软件的核心功能是：读取Github pages本地包含多行句子的文本文件，让用户逐句进行跟读录音、评分，最后展示详细的评分报告。
+项目路径为https://github.com/feiniao9711/en-daily.github.io
+
+# Tech Stack & Constraints
+1. **Framework**: Angular (Latest version, Standalone Component)。
+2. **Styling**: SCSS (移动端优先，界面简洁现代)。
+3. **State Management**: 使用 Class 属性管理学习状态（当前索引、分数列表）。
+4. **Backend**: **无**。所有逻辑在前端运行。
+5. **Data Source**: `HttpClient` 读取本地相对路径文本文件。
+
+# Functional Requirements
+
+## 1. 数据加载与解析
+- **日期逻辑**：获取当前系统日期，格式化为 `YYYYMMDD`。
+- **文件路径**：请求 `sentence/${date}.txt`。
+- **数据解析**：
+    - 获取到的文本内容包含多行句子，以换行符 (`\n`) 分隔。
+    - 请将文本分割成字符串数组，过滤掉空行。
+    - **示例数据结构**：`["Hello world.", "How are you?"]`。
+
+## 2. 核心学习流程 (Wizard Style)
+- **初始状态**：显示“开始打卡”按钮。
+- **进行中状态**：
+    - **单句显示**：主界面只显示**当前这一句**英语句子（大字体，居中）。
+    - **进度指示**：显示当前进度，例如 "Sentence 2 / 5"。
+    - **操作区**：
+        - **听音**：点击按钮朗读当前句子 (`speechSynthesis`)。
+        - **录音与评分**：
+            - 点击“开始录音” -> 调用 `MediaRecorder`。
+            - 点击“停止并提交” -> 停止录音，调用 `SpeechRecognition` 转文字。
+            - **自动评分**：对比识别文本与原句，计算得分（0-100）。
+            - **保存记录**：将当前句子的分数存入数组。
+        - **下一句 (Next)**：
+            - 评分完成后，显示“下一句”按钮。
+            - 点击后，索引 +1，切换到数组中的下一句。
+- **完成状态**：
+    - 当所有句子评分完毕后，进入“结算界面”。
+    - **平均分**：计算所有分数的平均值。
+    - **评分列表**：以列表或表格形式展示每一句话的得分详情。
+    - **重新开始**：提供一个按钮重置状态，回到第一句。
+
+## 3. 算法与逻辑
+- **评分算法**：实现 **Levenshtein Distance (编辑距离)** 算法。
+    - 公式：`Score = Math.round((1 - editDistance / maxLength) * 100)`。
+- **状态管理**：
+    - `currentIndex`: 当前句子索引。
+    - `scores`: 存储分数的数组，例如 `[90, 85]`。
+    - `isFinished`: 布尔值，标记是否完成所有练习。
+
+# Output Structure
+请提供以下代码块：
+1. **app.component.ts**: 包含核心逻辑、接口定义、评分算法和状态流转控制。
+2. **app.component.html**: 包含三个主要视图（开始页、练习页、结果页）的结构。
+3. **app.component.scss**: 样式美化，特别是结果列表的排版。
+
+# UI Design Guidelines
+- **练习页**：聚焦于当前句子，背景干净，按钮位置便于单手操作。
+- **结果页**：使用卡片或列表展示每句得分，高分绿色，低分红色，平均分醒目展示。

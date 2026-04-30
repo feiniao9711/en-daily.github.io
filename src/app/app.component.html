@@ -1,0 +1,125 @@
+<div class="app-container">
+  <!-- Start Page -->
+  <div class="view-container start-view" *ngIf="state === 'start'">
+    <div class="content">
+      <h1 class="app-title">📚 English Daily Practice</h1>
+      <p class="app-subtitle">Practice your English pronunciation daily</p>
+      
+      <button class="btn btn-primary btn-large" (click)="startPractice()">
+        Start Today's Practice
+      </button>
+      
+      <div class="error-message" *ngIf="errorMessage">
+        <p>{{ errorMessage }}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Practice Page -->
+  <div class="view-container practice-view" *ngIf="state === 'practice'">
+    <div class="progress-bar">
+      <div class="progress-fill" [style.width.%]="((currentIndex + 1) / sentences.length) * 100"></div>
+    </div>
+    
+    <div class="progress-text">{{ progressText }}</div>
+    
+    <div class="sentence-container">
+      <div class="sentence-card">
+        <p class="sentence-text">{{ currentSentence }}</p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <!-- Listen Button -->
+      <button class="btn btn-secondary" (click)="playSentence()" [disabled]="isRecording || isProcessing">
+        <span class="icon">🔊</span>
+        Listen
+      </button>
+
+      <!-- Recording Controls -->
+      <div class="recording-section">
+        <button 
+          class="btn btn-record" 
+          *ngIf="!isRecording && !isCurrentSentenceScored"
+          (click)="startRecording()"
+          [disabled]="isProcessing">
+          <span class="icon">🎤</span>
+          Start Recording
+        </button>
+
+        <button 
+          class="btn btn-stop" 
+          *ngIf="isRecording"
+          (click)="stopRecording()">
+          <span class="icon">⏹️</span>
+          Stop & Submit
+        </button>
+
+        <div class="processing-indicator" *ngIf="isProcessing">
+          <div class="spinner"></div>
+          <p>Processing your speech...</p>
+        </div>
+      </div>
+
+      <!-- Score Display -->
+      <div class="score-display" *ngIf="isCurrentSentenceScored">
+        <div class="score-card" [ngClass]="getScoreClass(scores[currentIndex].score)">
+          <div class="score-label">Your Score</div>
+          <div class="score-value">{{ scores[currentIndex].score }}</div>
+          <div class="recognized-text">
+            <strong>You said:</strong> {{ scores[currentIndex].recognized }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Next Button -->
+      <button 
+        class="btn btn-primary btn-large" 
+        *ngIf="isCurrentSentenceScored"
+        (click)="nextSentence()">
+        {{ currentIndex < sentences.length - 1 ? 'Next Sentence →' : 'View Results' }}
+      </button>
+
+      <div class="error-message" *ngIf="errorMessage">
+        <p>{{ errorMessage }}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Result Page -->
+  <div class="view-container result-view" *ngIf="state === 'result'">
+    <div class="content">
+      <h1 class="result-title">🎉 Practice Complete!</h1>
+      
+      <div class="average-score-card" [ngClass]="getScoreClass(averageScore)">
+        <div class="average-label">Average Score</div>
+        <div class="average-value">{{ averageScore }}</div>
+      </div>
+
+      <div class="scores-list">
+        <h2 class="section-title">Detailed Results</h2>
+        
+        <div class="score-item" *ngFor="let item of scores; let i = index">
+          <div class="score-item-header">
+            <span class="sentence-number">Sentence {{ i + 1 }}</span>
+            <span class="score-badge" [ngClass]="getScoreClass(item.score)">
+              {{ item.score }}
+            </span>
+          </div>
+          <div class="score-item-content">
+            <div class="original-sentence">
+              <strong>Original:</strong> {{ item.sentence }}
+            </div>
+            <div class="recognized-sentence">
+              <strong>You said:</strong> {{ item.recognized }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-large" (click)="restart()">
+        Practice Again
+      </button>
+    </div>
+  </div>
+</div>
