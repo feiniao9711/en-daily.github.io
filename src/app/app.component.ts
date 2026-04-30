@@ -1,6 +1,8 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { AudioRecorderService } from '../service/audio-recorder.service';
+import { filter, Subscription } from 'rxjs';
 
 interface SentenceScore {
   sentence: string;
@@ -17,7 +19,7 @@ type AppState = 'start' | 'practice' | 'result';
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss']
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   // State management
   state: AppState = 'start';
   sentences: string[] = [];
@@ -27,31 +29,39 @@ export class AppComponent implements OnInit {
   isProcessing: boolean = false;
   errorMessage: string = '';
 
-  // Audio APIs
-  private mediaRecorder: MediaRecorder | null = null;
-  private audioChunks: Blob[] = [];
   private recognition: any = null;
+  private subscriptions: Subscription[] = [];
 
-  constructor(private http: HttpClient) {
-    this.initSpeechRecognition();
+  constructor(private audioRecorderService: AudioRecorderService, private http: HttpClient) {
   }
 
   ngOnInit(): void {
-    // Component initialized
-  }
+    // 订阅录音状态
+    this.subscriptions.push(
+      this.audioRecorderService.recordingState$.subscribe(
+        state => this.isRecording = state
+      )
+    );
 
-  /**
-   * Initialize Web Speech API for speech recognition
-   */
-  private initSpeechRecognition(): void {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    
-    if (SpeechRecognition) {
-      this.recognition = new SpeechRecognition();
-      this.recognition.lang = 'en-US';
-      this.recognition.continuous = false;
-      this.recognition.interimResults = false;
-    }
+    // 订阅转录结果
+    this.audioRecorderService.transcriptionResult$
+      .pipe(
+        filter(text => !!text)
+      )
+      .subscribe(async (text) => {
+        this.isProcessing = false;
+        if (this.currentSentence) {
+          let score = this.calculateScore(
+            this.currentSentence,
+            text
+          );
+          this.scores.push({
+            sentence: this.currentSentence,
+            score: score,
+            recognized: text
+          });
+        }
+      });
   }
 
   /**
@@ -64,7 +74,7 @@ export class AppComponent implements OnInit {
 
     try {
       const text = await this.http.get(filePath, { responseType: 'text' }).toPromise();
-      
+
       if (text) {
         this.sentences = text
           .split('\n')
@@ -117,12 +127,12 @@ export class AppComponent implements OnInit {
   playSentence(): void {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      
+
       const utterance = new SpeechSynthesisUtterance(this.currentSentence);
       utterance.lang = 'en-US';
       utterance.rate = 0.9;
       utterance.pitch = 1;
-      
+
       window.speechSynthesis.speak(utterance);
     } else {
       this.errorMessage = 'Text-to-Speech is not supported in your browser.';
@@ -133,78 +143,23 @@ export class AppComponent implements OnInit {
    * Start recording user's voice
    */
   async startRecording(): Promise<void> {
-    this.errorMessage = '';
-    this.audioChunks = [];
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      this.mediaRecorder = new MediaRecorder(stream);
-      
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.start();
-      this.isRecording = true;
-    } catch (error) {
-      this.errorMessage = 'Failed to access microphone. Please grant permission.';
-      console.error('Error accessing microphone:', error);
+      this.errorMessage = '';
+      await this.audioRecorderService.startRecording();
+    } catch (error: any) {
+      this.errorMessage = error.message || '开始录音失败';
+      console.error('开始录音失败:', error);
     }
   }
 
-  /**
-   * Stop recording and process speech recognition
-   */
-  stopRecording(): void {
-    if (!this.mediaRecorder || !this.isRecording) {
-      return;
+  async stopRecording(): Promise<void> {
+    try {
+      this.errorMessage = '';
+      await this.audioRecorderService.stopRecording();
+    } catch (error: any) {
+      this.errorMessage = error.message || '停止录音失败';
+      console.error('停止录音失败:', error);
     }
-
-    this.isRecording = false;
-    this.isProcessing = true;
-
-    this.mediaRecorder.stop();
-    
-    // Stop all audio tracks
-    this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
-
-    // Process speech recognition
-    this.processSpeechRecognition();
-  }
-
-  /**
-   * Process speech recognition and calculate score
-   */
-  private processSpeechRecognition(): void {
-    if (!this.recognition) {
-      this.errorMessage = 'Speech Recognition is not supported in your browser. Please use Chrome.';
-      this.isProcessing = false;
-      return;
-    }
-
-    this.recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      const score = this.calculateScore(this.currentSentence, transcript);
-      
-      this.scores.push({
-        sentence: this.currentSentence,
-        score: score,
-        recognized: transcript
-      });
-
-      this.isProcessing = false;
-    };
-
-    this.recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      this.errorMessage = 'Speech recognition failed. Please try again.';
-      this.isProcessing = false;
-    };
-
-    this.recognition.start();
   }
 
   /**
@@ -213,12 +168,12 @@ export class AppComponent implements OnInit {
   private calculateScore(original: string, recognized: string): number {
     const s1 = original.toLowerCase().replace(/[^\w\s]/g, '');
     const s2 = recognized.toLowerCase().replace(/[^\w\s]/g, '');
-    
+
     const distance = this.levenshteinDistance(s1, s2);
     const maxLength = Math.max(s1.length, s2.length);
-    
+
     if (maxLength === 0) return 100;
-    
+
     const score = Math.round((1 - distance / maxLength) * 100);
     return Math.max(0, Math.min(100, score));
   }
@@ -280,7 +235,7 @@ export class AppComponent implements OnInit {
    */
   get averageScore(): number {
     if (this.scores.length === 0) return 0;
-    
+
     const total = this.scores.reduce((sum, item) => sum + item.score, 0);
     return Math.round(total / this.scores.length);
   }
@@ -303,6 +258,21 @@ export class AppComponent implements OnInit {
     this.currentIndex = 0;
     this.scores = [];
     this.errorMessage = '';
+  }
+
+  // 清除转录结果
+  clearTranscription(): void {
+    this.audioRecorderService.clearTranscription();
+  }
+
+  ngOnDestroy() {
+    // 清理订阅
+    this.subscriptions.forEach(sub => sub.unsubscribe());
+    
+    // 确保录音被停止
+    if (this.isRecording) {
+      this.stopRecording().catch(console.error);
+    }
   }
 }
 
