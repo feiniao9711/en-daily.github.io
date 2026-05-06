@@ -126,6 +126,8 @@ git push origin main
 
 5. Enable GitHub Pages in your repository settings
 
+6. Assess the site: https://feiniao9711.github.io/en-daily.github.io/
+
 ## 🎨 Customization
 
 ### Styling
