@@ -1,279 +1,184 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, ElementRef, ViewChild, signal, computed, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { HttpClient, HttpClientModule } from '@angular/common/http';
-import { AudioRecorderService } from '../service/audio-recorder.service';
-import { filter, Subscription } from 'rxjs';
 
-interface SentenceScore {
-  sentence: string;
-  score: number;
-  recognized: string;
-}
-
-type AppState = 'start' | 'practice' | 'result';
+type RecordState = 'idle' | 'recording' | 'paused' | 'finished';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, HttpClientModule],
+  imports: [CommonModule],
   templateUrl: './app.component.html',
-  styleUrls: ['./app.component.scss']
+  styleUrl: './app.component.scss',
 })
-export class AppComponent implements OnInit, OnDestroy {
-  // State management
-  state: AppState = 'start';
-  sentences: string[] = [];
-  currentIndex: number = 0;
-  scores: SentenceScore[] = [];
-  isRecording: boolean = false;
-  isProcessing: boolean = false;
-  errorMessage: string = '';
+export class AppComponent implements OnDestroy {
+  @ViewChild('playback') playbackEl!: ElementRef<HTMLAudioElement>;
 
-  private recognition: any = null;
-  private subscriptions: Subscription[] = [];
+  // 全信号化：确保 Angular 自动追踪变化
+  readonly audioStream = signal<MediaStream | null>(null);
+  readonly state = signal<RecordState>('idle');
+  readonly mimeType = signal('audio/webm;codecs=opus');
+  readonly errorMsg = signal<string | null>(null);
+  readonly duration = signal(0);
+  readonly playbackUrl = signal<string | null>(null);
 
-  constructor(private audioRecorderService: AudioRecorderService, private http: HttpClient) {
-  }
+  readonly hasMic = computed(() => this.audioStream() !== null);
+  readonly isIdle = computed(() => this.state() === 'idle');
+  readonly isRecording = computed(() => this.state() === 'recording');
+  readonly isPaused = computed(() => this.state() === 'paused');
+  readonly isFinished = computed(() => this.state() === 'finished');
 
-  ngOnInit(): void {
-    // 订阅录音状态
-    this.subscriptions.push(
-      this.audioRecorderService.recordingState$.subscribe(
-        state => this.isRecording = state
-      )
-    );
+  private recorder: MediaRecorder | null = null;
+  private chunks: BlobPart[] = [];
+  private startTime = 0;
+  private timerId: ReturnType<typeof setInterval> | null = null;
 
-    // 订阅转录结果
-    this.audioRecorderService.transcriptionResult$
-      .pipe(
-        filter(text => !!text)
-      )
-      .subscribe(async (text) => {
-        this.isProcessing = false;
-        if (this.currentSentence) {
-          let score = this.calculateScore(
-            this.currentSentence,
-            text
-          );
-          this.scores.push({
-            sentence: this.currentSentence,
-            score: score,
-            recognized: text
-          });
-        }
-      });
-  }
+  readonly mimeOptions = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ];
 
-  /**
-   * Start the practice session
-   */
-  async startPractice(): Promise<void> {
-    this.errorMessage = '';
-    const date = this.getCurrentDate();
-    const filePath = `sentence/${date}.txt`;
-
+  async startMic(): Promise<void> {
     try {
-      const text = await this.http.get(filePath, { responseType: 'text' }).toPromise();
-
-      if (text) {
-        this.sentences = text
-          .split('\n')
-          .map(line => line.trim())
-          .filter(line => line.length > 0);
-
-        if (this.sentences.length === 0) {
-          this.errorMessage = 'No sentences found in the file.';
-          return;
-        }
-
-        this.currentIndex = 0;
-        this.scores = [];
-        this.state = 'practice';
-      }
-    } catch (error) {
-      this.errorMessage = `Failed to load sentences for ${date}. Please check if the file exists.`;
-      console.error('Error loading sentences:', error);
+      this.errorMsg.set(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.audioStream.set(stream);
+    } catch (err: any) {
+      this.errorMsg.set(`无法访问麦克风: ${err?.message ?? '未知错误'}`);
     }
   }
 
-  /**
-   * Get current date in YYYYMMDD format
-   */
-  private getCurrentDate(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${year}${month}${day}`;
+  startRecording(): void {
+    const stream = this.audioStream();
+    if (!stream) return;
+
+    this.chunks = [];
+    const preferredMime = this.mimeType();
+    const options: MediaRecorderOptions = MediaRecorder.isTypeSupported(preferredMime)
+      ? { mimeType: preferredMime }
+      : {};
+
+    this.recorder = new MediaRecorder(stream, options);
+
+    // 数据收集
+    this.recorder.ondataavailable = (e: BlobEvent) => {
+      if (e.data.size > 0) this.chunks.push(e.data);
+    };
+
+    // 录制结束
+    this.recorder.onstop = () => this.handleStop();
+
+    // ✅ 移除 MediaRecorderErrorEvent 显式类型，改用 Event + 安全访问，零 import 依赖
+    this.recorder.onerror = (e: Event) => {
+      const error = (e as any).error as DOMException | undefined;
+      this.errorMsg.set(`录制失败: ${error?.name || '未知错误'}`);
+      this.state.set('idle');
+      if (this.timerId) clearInterval(this.timerId);
+    };
+
+    // 记录实际生效的编码格式
+    this.mimeType.set(this.recorder.mimeType || preferredMime);
+
+    // 250ms 触发一次数据事件，兼容性更好
+    this.recorder.start(250);
+    this.startTime = Date.now();
+    this.duration.set(0);
+    this.state.set('recording');
+
+    this.timerId = setInterval(() => {
+      this.duration.set(Math.floor((Date.now() - this.startTime) / 1000));
+    }, 250);
   }
 
-  /**
-   * Get current sentence
-   */
-  get currentSentence(): string {
-    return this.sentences[this.currentIndex] || '';
+  pauseRecording(): void {
+    this.recorder?.pause();
+    this.state.set('paused');
+    if (this.timerId) clearInterval(this.timerId);
   }
 
-  /**
-   * Get progress text
-   */
-  get progressText(): string {
-    return `Sentence ${this.currentIndex + 1} / ${this.sentences.length}`;
+  resumeRecording(): void {
+    this.recorder?.resume();
+    this.state.set('recording');
+    this.startTime = Date.now() - this.duration() * 1000;
+    this.timerId = setInterval(() => {
+      this.duration.set(Math.floor((Date.now() - this.startTime) / 1000));
+    }, 250);
   }
 
-  /**
-   * Play current sentence using Text-to-Speech
-   */
-  playSentence(): void {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(this.currentSentence);
-      utterance.lang = 'en-US';
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-
-      window.speechSynthesis.speak(utterance);
-    } else {
-      this.errorMessage = 'Text-to-Speech is not supported in your browser.';
+  stopRecording(): void {
+    if (this.recorder?.state === 'recording' || this.recorder?.state === 'paused') {
+      this.recorder.stop();
     }
   }
 
-  /**
-   * Start recording user's voice
-   */
-  async startRecording(): Promise<void> {
-    try {
-      this.errorMessage = '';
-      await this.audioRecorderService.startRecording();
-    } catch (error: any) {
-      this.errorMessage = error.message || '开始录音失败';
-      console.error('开始录音失败:', error);
-    }
-  }
+  private handleStop(): void {
+    if (this.timerId) clearInterval(this.timerId);
 
-  async stopRecording(): Promise<void> {
-    try {
-      this.errorMessage = '';
-      await this.audioRecorderService.stopRecording();
-    } catch (error: any) {
-      this.errorMessage = error.message || '停止录音失败';
-      console.error('停止录音失败:', error);
-    }
-  }
-
-  /**
-   * Calculate score using Levenshtein Distance algorithm
-   */
-  private calculateScore(original: string, recognized: string): number {
-    const s1 = original.toLowerCase().replace(/[^\w\s]/g, '');
-    const s2 = recognized.toLowerCase().replace(/[^\w\s]/g, '');
-
-    const distance = this.levenshteinDistance(s1, s2);
-    const maxLength = Math.max(s1.length, s2.length);
-
-    if (maxLength === 0) return 100;
-
-    const score = Math.round((1 - distance / maxLength) * 100);
-    return Math.max(0, Math.min(100, score));
-  }
-
-  /**
-   * Levenshtein Distance algorithm implementation
-   */
-  private levenshteinDistance(str1: string, str2: string): number {
-    const len1 = str1.length;
-    const len2 = str2.length;
-    const matrix: number[][] = [];
-
-    // Initialize matrix
-    for (let i = 0; i <= len1; i++) {
-      matrix[i] = [i];
-    }
-    for (let j = 0; j <= len2; j++) {
-      matrix[0][j] = j;
+    if (this.chunks.length === 0) {
+      this.errorMsg.set('未捕获到音频数据。请确保麦克风未被占用，且录制时长 >1 秒');
+      this.state.set('idle');
+      return;
     }
 
-    // Fill matrix
-    for (let i = 1; i <= len1; i++) {
-      for (let j = 1; j <= len2; j++) {
-        if (str1[i - 1] === str2[j - 1]) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1, // substitution
-            matrix[i][j - 1] + 1,     // insertion
-            matrix[i - 1][j] + 1      // deletion
-          );
-        }
-      }
-    }
-
-    return matrix[len1][len2];
-  }
-
-  /**
-   * Check if current sentence has been scored
-   */
-  get isCurrentSentenceScored(): boolean {
-    return this.scores.length > this.currentIndex;
-  }
-
-  /**
-   * Move to next sentence
-   */
-  nextSentence(): void {
-    if (this.currentIndex < this.sentences.length - 1) {
-      this.currentIndex++;
-    } else {
-      this.state = 'result';
-    }
-  }
-
-  /**
-   * Calculate average score
-   */
-  get averageScore(): number {
-    if (this.scores.length === 0) return 0;
-
-    const total = this.scores.reduce((sum, item) => sum + item.score, 0);
-    return Math.round(total / this.scores.length);
-  }
-
-  /**
-   * Get score color class
-   */
-  getScoreClass(score: number): string {
-    if (score >= 80) return 'score-high';
-    if (score >= 60) return 'score-medium';
-    return 'score-low';
-  }
-
-  /**
-   * Restart practice
-   */
-  restart(): void {
-    this.state = 'start';
-    this.sentences = [];
-    this.currentIndex = 0;
-    this.scores = [];
-    this.errorMessage = '';
-  }
-
-  // 清除转录结果
-  clearTranscription(): void {
-    this.audioRecorderService.clearTranscription();
-  }
-
-  ngOnDestroy() {
-    // 清理订阅
-    this.subscriptions.forEach(sub => sub.unsubscribe());
+    const type = (this.chunks[0] as Blob).type || 'audio/webm';
+    const blob = new Blob(this.chunks, { type });
     
-    // 确保录音被停止
-    if (this.isRecording) {
-      this.stopRecording().catch(console.error);
+    if (this.playbackUrl()) URL.revokeObjectURL(this.playbackUrl()!);
+    this.playbackUrl.set(URL.createObjectURL(blob));
+    this.state.set('finished');
+  }
+
+  playRecording(): void {
+    this.playbackEl?.nativeElement.play().catch(() => {});
+  }
+
+  downloadRecording(): void {
+    const url = this.playbackUrl();
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recording_${Date.now()}.${this.getExt()}`;
+    a.click();
+  }
+
+  reset(): void {
+    this.stopRecording();
+    if (this.timerId) clearInterval(this.timerId);
+
+    const stream = this.audioStream();
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      this.audioStream.set(null);
     }
+
+    const url = this.playbackUrl();
+    if (url) URL.revokeObjectURL(url);
+
+    this.playbackUrl.set(null);
+    this.chunks = [];
+    this.recorder = null;
+    this.state.set('idle');
+    this.duration.set(0);
+    this.errorMsg.set(null);
+  }
+
+  private getExt(): string {
+    const m = this.mimeType();
+    if (m.includes('mp4')) return 'm4a';
+    if (m.includes('ogg')) return 'ogg';
+    return 'webm';
+  }
+
+  formatTime(sec: number): string {
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  ngOnDestroy(): void {
+    if (this.timerId) clearInterval(this.timerId);
+    const url = this.playbackUrl();
+    if (url) URL.revokeObjectURL(url);
   }
 }
-
-// Made with Bob

@@ -9,7 +9,7 @@ import { catchError, switchMap } from 'rxjs/operators';
 export class AudioRecorderService {
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
-  private audioContext: AudioContext | null = null;
+  private stream: MediaStream | null = null;
   private isRecording = false;
   
   // 用于观察录音状态
@@ -24,71 +24,102 @@ export class AudioRecorderService {
   async startRecording(): Promise<void> {
     try {
       // 请求麦克风权限
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           sampleRate: 16000, // 16kHz 是语音识别常用采样率
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
 
+      // 获取支持的MIME类型
+      const mimeType = this.getSupportedMimeType();
+      const options: MediaRecorderOptions = mimeType
+        ? { mimeType, audioBitsPerSecond: 128000 }
+        : { audioBitsPerSecond: 128000 };
+
       // 创建 MediaRecorder
-      this.mediaRecorder = new MediaRecorder(stream, {
-        mimeType: this.getSupportedMimeType(),
-        audioBitsPerSecond: 128000
-      });
+      this.mediaRecorder = new MediaRecorder(this.stream, options);
 
       this.audioChunks = [];
-      this.isRecording = true;
-      this.recordingState.next(true);
 
-      // 收集音频数据
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+      // 设置事件处理器（在start之前）
+      this.mediaRecorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data && event.data.size > 0) {
           this.audioChunks.push(event.data);
-          console.log("this.audioChunks.length=", this.audioChunks.length);
+          console.log('音频数据块收集:', event.data.size, 'bytes');
         }
       };
 
-      // 开始录音
-      this.mediaRecorder.start(1000); // 每1秒收集一次数据
+      this.mediaRecorder.onstart = () => {
+        this.isRecording = true;
+        this.recordingState.next(true);
+        console.log('录音已开始');
+      };
+
+      this.mediaRecorder.onstop = () => {
+        this.isRecording = false;
+        this.recordingState.next(false);
+        console.log('录音已停止');
+        
+        // 获取完整的音频Blob
+        const mimeType = this.mediaRecorder?.mimeType || 'audio/webm';
+        const audioBlob = new Blob(this.audioChunks, { type: mimeType });
+        
+        console.log('音频Blob创建完成:', audioBlob.size, 'bytes, type:', mimeType);
+        
+        // 发送到语音识别服务
+        this.sendToSpeechToText(audioBlob);
+        
+        // 清理资源
+        this.cleanup();
+      };
+
+      this.mediaRecorder.onerror = (event: Event) => {
+        console.error('MediaRecorder错误:', event);
+        this.cleanup();
+        throw new Error('录音过程中发生错误');
+      };
+
+      // 开始录音 - 每1秒触发一次dataavailable事件
+      this.mediaRecorder.start(1000);
       
     } catch (error) {
       console.error('无法访问麦克风:', error);
+      this.cleanup();
       throw new Error('无法访问麦克风，请检查权限设置');
     }
   }
 
   // 停止录音
   async stopRecording(): Promise<void> {
-    if (!this.mediaRecorder || !this.isRecording) {
+    if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') {
       console.warn('没有正在进行的录音');
       return;
     }
-    console.log("stopRecording");
 
-    return new Promise((resolve) => {
-      this.mediaRecorder!.onstop = () => {
-        this.isRecording = false;
-        this.recordingState.next(false);
-        console.log("获取完整的音频Blob");
-        // 获取完整的音频Blob
-        const audioBlob = new Blob(this.audioChunks, { 
-          type: this.mediaRecorder?.mimeType || 'audio/webm' 
-        });
-        
-        // 发送到语音识别服务
-        this.sendToSpeechToText(audioBlob);
-        
-        // 停止所有音频轨道
-        this.mediaRecorder?.stream.getTracks().forEach(track => track.stop());
-        
-        resolve();
-      };
+    if (this.mediaRecorder.state === 'recording') {
+      console.log('停止录音中...');
+      // 请求最后的数据并停止
+      this.mediaRecorder.stop();
+    }
+  }
 
-      this.mediaRecorder!.stop();
-    });
+  // 清理资源
+  private cleanup(): void {
+    // 停止所有音频轨道
+    if (this.stream) {
+      this.stream.getTracks().forEach(track => {
+        track.stop();
+        console.log('音频轨道已停止');
+      });
+      this.stream = null;
+    }
+    
+    this.mediaRecorder = null;
+    this.audioChunks = [];
   }
 
   // 发送音频到语音识别API

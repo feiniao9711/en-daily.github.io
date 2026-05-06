@@ -1,125 +1,73 @@
-<div class="app-container">
-  <!-- Start Page -->
-  <div class="view-container start-view" *ngIf="state === 'start'">
-    <div class="content">
-      <h1 class="app-title">📚 English Daily Practice</h1>
-      <p class="app-subtitle">Practice your English pronunciation daily</p>
+<div class="app">
+  <header>
+    <h1>🎙️ Audio Recorder</h1>
+    <p>基于 MediaRecorder API 的音频录制 · Angular 21 SPA</p>
+  </header>
+
+  @if (errorMsg()) {
+    <div class="toast error">{{ errorMsg() }}</div>
+  }
+
+  <main>
+    <section class="status-section">
+      <h2>{{ hasMic() ? '麦克风已就绪' : '开始录制' }}</h2>
       
-      <button class="btn btn-primary btn-large" (click)="startPractice()">
-        Start Today's Practice
-      </button>
-      
-      <div class="error-message" *ngIf="errorMessage">
-        <p>{{ errorMessage }}</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- Practice Page -->
-  <div class="view-container practice-view" *ngIf="state === 'practice'">
-    <div class="progress-bar">
-      <div class="progress-fill" [style.width.%]="((currentIndex + 1) / sentences.length) * 100"></div>
-    </div>
-    
-    <div class="progress-text">{{ progressText }}</div>
-    
-    <div class="sentence-container">
-      <div class="sentence-card">
-        <p class="sentence-text">{{ currentSentence }}</p>
-      </div>
-    </div>
-
-    <div class="controls">
-      <!-- Listen Button -->
-      <button class="btn btn-secondary" (click)="playSentence()" [disabled]="isRecording || isProcessing">
-        <span class="icon">🔊</span>
-        Listen
-      </button>
-
-      <!-- Recording Controls -->
-      <div class="recording-section">
-        <button 
-          class="btn btn-record" 
-          *ngIf="!isRecording && !isCurrentSentenceScored"
-          (click)="startRecording()"
-          [disabled]="isProcessing">
+      @if (!hasMic()) {
+        <div class="placeholder">
           <span class="icon">🎤</span>
-          Start Recording
-        </button>
-
-        <button 
-          class="btn btn-stop" 
-          *ngIf="isRecording"
-          (click)="stopRecording()">
-          <span class="icon">⏹️</span>
-          Stop & Submit
-        </button>
-
-        <div class="processing-indicator" *ngIf="isProcessing">
-          <div class="spinner"></div>
-          <p>Processing your speech...</p>
+          <p>点击下方按钮开启麦克风</p>
         </div>
-      </div>
+      }
 
-      <!-- Score Display -->
-      <div class="score-display" *ngIf="isCurrentSentenceScored">
-        <div class="score-card" [ngClass]="getScoreClass(scores[currentIndex].score)">
-          <div class="score-label">Your Score</div>
-          <div class="score-value">{{ scores[currentIndex].score }}</div>
-          <div class="recognized-text">
-            <strong>You said:</strong> {{ scores[currentIndex].recognized }}
-          </div>
-        </div>
-      </div>
+      <div class="timer">{{ formatTime(duration()) }}</div>
+    </section>
 
-      <!-- Next Button -->
-      <button 
-        class="btn btn-primary btn-large" 
-        *ngIf="isCurrentSentenceScored"
-        (click)="nextSentence()">
-        {{ currentIndex < sentences.length - 1 ? 'Next Sentence →' : 'View Results' }}
-      </button>
+    <section class="controls">
+      @if (!hasMic()) {
+        <button class="btn primary" (click)="startMic()">🎙️ 开启麦克风</button>
+      }
 
-      <div class="error-message" *ngIf="errorMessage">
-        <p>{{ errorMessage }}</p>
-      </div>
-    </div>
-  </div>
+      @if (hasMic()) {
+        @if (isRecording()) {
+          <button class="btn" (click)="pauseRecording()">⏸ 暂停</button>
+          <button class="btn danger" (click)="stopRecording()">⏹ 停止</button>
+        }
+        @if (isPaused()) {
+          <button class="btn" (click)="resumeRecording()">▶ 继续</button>
+          <button class="btn danger" (click)="stopRecording()">⏹ 停止</button>
+        }
+        @if (isIdle()) {
+          <button class="btn success" (click)="startRecording()">🔴 开始录制</button>
+        }
+        @if (isFinished()) {
+          <button class="btn" (click)="playRecording()">▶ 播放录音</button>
+          <button class="btn primary" (click)="downloadRecording()">⬇ 下载</button>
+          <button class="btn" (click)="reset()">🔄 重新录制</button>
+        }
+      }
+    </section>
 
-  <!-- Result Page -->
-  <div class="view-container result-view" *ngIf="state === 'result'">
-    <div class="content">
-      <h1 class="result-title">🎉 Practice Complete!</h1>
-      
-      <div class="average-score-card" [ngClass]="getScoreClass(averageScore)">
-        <div class="average-label">Average Score</div>
-        <div class="average-value">{{ averageScore }}</div>
-      </div>
+    <section class="settings">
+      <label>
+        编码格式
+        <select [value]="mimeType()" (change)="mimeType.set($any($event).target.value)">
+          @for (mime of mimeOptions; track mime) {
+            <option [value]="mime">{{ mime }}</option>
+          }
+        </select>
+      </label>
+    </section>
 
-      <div class="scores-list">
-        <h2 class="section-title">Detailed Results</h2>
-        
-        <div class="score-item" *ngFor="let item of scores; let i = index">
-          <div class="score-item-header">
-            <span class="sentence-number">Sentence {{ i + 1 }}</span>
-            <span class="score-badge" [ngClass]="getScoreClass(item.score)">
-              {{ item.score }}
-            </span>
-          </div>
-          <div class="score-item-content">
-            <div class="original-sentence">
-              <strong>Original:</strong> {{ item.sentence }}
-            </div>
-            <div class="recognized-sentence">
-              <strong>You said:</strong> {{ item.recognized }}
-            </div>
-          </div>
-        </div>
-      </div>
+    @if (isFinished()) {
+      <section class="playback-section">
+        <h2>录音回放</h2>
+        <!-- ✅ 使用信号绑定 src，替代原生 DOM 操作，100% 可靠 -->
+        <audio #playback [src]="playbackUrl()" controls class="audio-player"></audio>
+      </section>
+    }
+  </main>
 
-      <button class="btn btn-primary btn-large" (click)="restart()">
-        Practice Again
-      </button>
-    </div>
-  </div>
+  <footer>
+    <p>MediaRecorder API Audio Demo · 部署于 GitHub Pages</p>
+  </footer>
 </div>
