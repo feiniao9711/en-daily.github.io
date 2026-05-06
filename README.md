@@ -49,7 +49,7 @@ npm start
 
 4. Open your browser and navigate to:
 ```
-http://localhost:4200
+http://localhost:4200/en-daily.github.io
 ```
 
 ## 📁 Project Structure

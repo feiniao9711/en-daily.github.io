@@ -1,184 +1,189 @@
-import { Component, ElementRef, ViewChild, signal, computed, OnDestroy } from '@angular/core';
+import { Component, signal, computed, OnInit, OnDestroy, NgZone, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 
-type RecordState = 'idle' | 'recording' | 'paused' | 'finished';
+declare global {
+  interface Window { SpeechRecognition: any; webkitSpeechRecognition: any; }
+}
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+interface Quote { content: string; author: string; }
+type AppStatus = 'loading' | 'ready' | 'recording' | 'manual' | 'scoring' | 'finished';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
-export class AppComponent implements OnDestroy {
+export class AppComponent implements OnInit, OnDestroy {
   @ViewChild('playback') playbackEl!: ElementRef<HTMLAudioElement>;
 
-  // 全信号化：确保 Angular 自动追踪变化
-  readonly audioStream = signal<MediaStream | null>(null);
-  readonly state = signal<RecordState>('idle');
-  readonly mimeType = signal('audio/webm;codecs=opus');
+  readonly quotes = signal<Quote[]>([]);
+  readonly currentIndex = signal(0);
+  readonly scores = signal<number[]>([]);
+  readonly status = signal<AppStatus>('loading');
+  readonly transcript = signal('');
+  readonly manualInput = signal('');
+  readonly currentScore = signal<number | null>(null);
   readonly errorMsg = signal<string | null>(null);
-  readonly duration = signal(0);
-  readonly playbackUrl = signal<string | null>(null);
 
-  readonly hasMic = computed(() => this.audioStream() !== null);
-  readonly isIdle = computed(() => this.state() === 'idle');
-  readonly isRecording = computed(() => this.state() === 'recording');
-  readonly isPaused = computed(() => this.state() === 'paused');
-  readonly isFinished = computed(() => this.state() === 'finished');
+  readonly currentQuote = computed(() => this.quotes()[this.currentIndex()] || { content: '', author: '' });
+  readonly isFinished = computed(() => this.status() === 'finished');
+  readonly avgScore = computed(() => {
+    const valid = this.scores().filter(s => s !== null);
+    return valid.length ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length) : 0;
+  });
+  readonly progress = computed(() => `${this.currentIndex() + 1} / 8`);
 
-  private recorder: MediaRecorder | null = null;
-  private chunks: BlobPart[] = [];
-  private startTime = 0;
-  private timerId: ReturnType<typeof setInterval> | null = null;
+  private recognition: any;
 
-  readonly mimeOptions = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ];
+  ngOnInit(): void { this.loadDailyQuotes(); }
 
-  async startMic(): Promise<void> {
+  async loadDailyQuotes(): Promise<void> {
+    const baseDate = new Date('2026-05-06');
+    const page = Math.floor((Date.now() - baseDate.getTime()) / 86400000) + 1;
     try {
-      this.errorMsg.set(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.audioStream.set(stream);
-    } catch (err: any) {
-      this.errorMsg.set(`无法访问麦克风: ${err?.message ?? '未知错误'}`);
+      const res = await fetch(`https://api.quotable.io/quotes?limit=8&page=${page}`);
+      if (!res.ok) throw new Error('API异常');
+      const data = await res.json();
+      this.quotes.set(data.results || []);
+    } catch {
+      this.quotes.set([
+        { content: "The only way to do great work is to love what you do.", author: "Steve Jobs" },
+        { content: "Success is not final, failure is not fatal: it is the courage to continue that counts.", author: "Winston Churchill" },
+        { content: "Life is what happens when you're busy making other plans.", author: "John Lennon" },
+        { content: "The future belongs to those who believe in the beauty of their dreams.", author: "Eleanor Roosevelt" },
+        { content: "It does not matter how slowly you go as long as you do not stop.", author: "Confucius" },
+        { content: "In the middle of difficulty lies opportunity.", author: "Albert Einstein" },
+        { content: "Believe you can and you're halfway there.", author: "Theodore Roosevelt" },
+        { content: "Act as if what you do makes a difference. It does.", author: "William James" }
+      ]);
     }
+    this.scores.set(Array(8).fill(null));
+    this.currentIndex.set(0);
+    this.status.set('ready');
   }
 
-  startRecording(): void {
-    const stream = this.audioStream();
-    if (!stream) return;
-
-    this.chunks = [];
-    const preferredMime = this.mimeType();
-    const options: MediaRecorderOptions = MediaRecorder.isTypeSupported(preferredMime)
-      ? { mimeType: preferredMime }
-      : {};
-
-    this.recorder = new MediaRecorder(stream, options);
-
-    // 数据收集
-    this.recorder.ondataavailable = (e: BlobEvent) => {
-      if (e.data.size > 0) this.chunks.push(e.data);
-    };
-
-    // 录制结束
-    this.recorder.onstop = () => this.handleStop();
-
-    // ✅ 移除 MediaRecorderErrorEvent 显式类型，改用 Event + 安全访问，零 import 依赖
-    this.recorder.onerror = (e: Event) => {
-      const error = (e as any).error as DOMException | undefined;
-      this.errorMsg.set(`录制失败: ${error?.name || '未知错误'}`);
-      this.state.set('idle');
-      if (this.timerId) clearInterval(this.timerId);
-    };
-
-    // 记录实际生效的编码格式
-    this.mimeType.set(this.recorder.mimeType || preferredMime);
-
-    // 250ms 触发一次数据事件，兼容性更好
-    this.recorder.start(250);
-    this.startTime = Date.now();
-    this.duration.set(0);
-    this.state.set('recording');
-
-    this.timerId = setInterval(() => {
-      this.duration.set(Math.floor((Date.now() - this.startTime) / 1000));
-    }, 250);
+  playTTS(): void {
+    window.speechSynthesis.cancel();
+    const quote = this.currentQuote();
+    if (!quote.content) return;
+    const u = new SpeechSynthesisUtterance(quote.content);
+    u.lang = 'en-US'; u.rate = 0.85;
+    window.speechSynthesis.speak(u);
   }
 
-  pauseRecording(): void {
-    this.recorder?.pause();
-    this.state.set('paused');
-    if (this.timerId) clearInterval(this.timerId);
-  }
-
-  resumeRecording(): void {
-    this.recorder?.resume();
-    this.state.set('recording');
-    this.startTime = Date.now() - this.duration() * 1000;
-    this.timerId = setInterval(() => {
-      this.duration.set(Math.floor((Date.now() - this.startTime) / 1000));
-    }, 250);
-  }
-
-  stopRecording(): void {
-    if (this.recorder?.state === 'recording' || this.recorder?.state === 'paused') {
-      this.recorder.stop();
-    }
-  }
-
-  private handleStop(): void {
-    if (this.timerId) clearInterval(this.timerId);
-
-    if (this.chunks.length === 0) {
-      this.errorMsg.set('未捕获到音频数据。请确保麦克风未被占用，且录制时长 >1 秒');
-      this.state.set('idle');
+  startTest(): void {
+    this.errorMsg.set(null);
+    if (!SpeechRecognition) {
+      this.status.set('manual');
+      this.errorMsg.set('当前浏览器不支持语音识别，已切换至手动输入模式');
       return;
     }
 
-    const type = (this.chunks[0] as Blob).type || 'audio/webm';
-    const blob = new Blob(this.chunks, { type });
-    
-    if (this.playbackUrl()) URL.revokeObjectURL(this.playbackUrl()!);
-    this.playbackUrl.set(URL.createObjectURL(blob));
-    this.state.set('finished');
-  }
+    this.recognition = new SpeechRecognition();
+    this.recognition.lang = 'en-US';
+    this.recognition.interimResults = false;
+    this.recognition.continuous = false;
+    this.recognition.maxAlternatives = 1;
 
-  playRecording(): void {
-    this.playbackEl?.nativeElement.play().catch(() => {});
-  }
+    this.recognition.onresult = (e: any) => {
+      this.transcript.set(e.results[0][0].transcript);
+      this.evaluateScore(this.transcript());
+    };
 
-  downloadRecording(): void {
-    const url = this.playbackUrl();
-    if (!url) return;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `recording_${Date.now()}.${this.getExt()}`;
-    a.click();
-  }
+    this.recognition.onerror = (e: any) => {
+      if (e.error === 'network' || e.error === 'service-not-allowed') {
+        this.status.set('manual');
+        this.errorMsg.set('语音识别服务暂不可用，请手动输入您朗读的句子');
+      } else {
+        this.errorMsg.set(`识别错误: ${e.error}`);
+        this.status.set('ready');
+      }
+    };
 
-  reset(): void {
-    this.stopRecording();
-    if (this.timerId) clearInterval(this.timerId);
+    this.recognition.onend = () => {
+      if (this.status() === 'recording') this.status.set('ready');
+    };
 
-    const stream = this.audioStream();
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      this.audioStream.set(null);
+    try {
+      this.recognition.start();
+      this.status.set('recording');
+    } catch {
+      this.status.set('manual');
     }
+  }
 
-    const url = this.playbackUrl();
-    if (url) URL.revokeObjectURL(url);
+  stopTest(): void {
+    if (this.recognition) this.recognition.stop();
+  }
 
-    this.playbackUrl.set(null);
-    this.chunks = [];
-    this.recorder = null;
-    this.state.set('idle');
-    this.duration.set(0);
+  submitManual(): void {
+    if (!this.manualInput().trim()) {
+      this.errorMsg.set('请输入内容后再提交');
+      return;
+    }
+    this.transcript.set(this.manualInput());
+    this.evaluateScore(this.manualInput().trim());
+  }
+
+  private evaluateScore(spoken: string): void {
+    const quote = this.currentQuote();
+    if (!quote.content) return;
+    const original = quote.content;
+    const score = this.calculateOverlap(original, spoken);
+    this.currentScore.set(score);
+    const newScores = [...this.scores()];
+    newScores[this.currentIndex()] = score;
+    this.scores.set(newScores);
+    this.status.set('scoring');
+  }
+
+  private calculateOverlap(orig: string, spoken: string): number {
+    if (!spoken) return 0;
+    const clean = (s: string) => s.toLowerCase().replace(/[^\w\s']/g, '').trim();
+    const origWords = clean(orig).split(/\s+/);
+    const spokenWords = clean(spoken).split(/\s+/);
+    
+    let matches = 0, sIdx = 0;
+    for (const oW of origWords) {
+      for (let j = sIdx; j < spokenWords.length; j++) {
+        if (spokenWords[j] === oW || spokenWords[j].includes(oW) || oW.includes(spokenWords[j])) {
+          matches++; sIdx = j + 1; break;
+        }
+      }
+    }
+    return Math.min(100, Math.round((matches / origWords.length) * 100));
+  }
+
+  nextQuote(): void {
+    if (this.currentIndex() < 7) {
+      this.currentIndex.update(i => i + 1);
+      this.status.set('ready');
+      this.transcript.set('');
+      this.manualInput.set('');
+      this.currentScore.set(null);
+    } else {
+      this.status.set('finished');
+    }
+  }
+
+  restart(): void {
+    window.speechSynthesis.cancel();
+    if (this.recognition) this.recognition.abort();
+    this.currentIndex.set(0);
+    this.scores.set(Array(8).fill(null));
+    this.transcript.set('');
+    this.manualInput.set('');
+    this.currentScore.set(null);
+    this.status.set('ready');
     this.errorMsg.set(null);
   }
 
-  private getExt(): string {
-    const m = this.mimeType();
-    if (m.includes('mp4')) return 'm4a';
-    if (m.includes('ogg')) return 'ogg';
-    return 'webm';
-  }
-
-  formatTime(sec: number): string {
-    const m = Math.floor(sec / 60).toString().padStart(2, '0');
-    const s = (sec % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  }
-
   ngOnDestroy(): void {
-    if (this.timerId) clearInterval(this.timerId);
-    const url = this.playbackUrl();
-    if (url) URL.revokeObjectURL(url);
+    window.speechSynthesis.cancel();
+    if (this.recognition) this.recognition.abort();
   }
 }

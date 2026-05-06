@@ -1,73 +1,71 @@
 <div class="app">
   <header>
-    <h1>🎙️ Audio Recorder</h1>
-    <p>基于 MediaRecorder API 的音频录制 · Angular 21 SPA</p>
+    <h1>🎙️ 每日英语跟读</h1>
+    <p>每日 8 句 · 语音合成 · 智能评分</p>
   </header>
 
   @if (errorMsg()) {
-    <div class="toast error">{{ errorMsg() }}</div>
+    <div class="toast">{{ errorMsg() }}</div>
   }
 
   <main>
-    <section class="status-section">
-      <h2>{{ hasMic() ? '麦克风已就绪' : '开始录制' }}</h2>
+    <section class="quote-card">
+      <div class="progress">{{ progress() }}</div>
+      <blockquote>
+        <p class="text">"{{ currentQuote().content }}"</p>
+        <cite>— {{ currentQuote().author }}</cite>
+      </blockquote>
       
-      @if (!hasMic()) {
-        <div class="placeholder">
-          <span class="icon">🎤</span>
-          <p>点击下方按钮开启麦克风</p>
+      <div class="actions">
+        <button class="btn outline" (click)="playTTS()">🔊 播放原声</button>
+        
+        @if (status() === 'ready') {
+          <button class="btn primary" (click)="startTest()">🎙️ 开始测试</button>
+        } @else if (status() === 'recording') {
+          <button class="btn danger" (click)="stopTest()">⏹ 停止并评分</button>
+        } @else if (status() === 'manual') {
+          <div class="manual-box">
+            <textarea [(ngModel)]="manualInput" placeholder="输入您朗读的英文句子..."></textarea>
+            <button class="btn success" (click)="submitManual()">✅ 提交评分</button>
+          </div>
+        } @else if (status() === 'scoring') {
+          <button class="btn success" (click)="nextQuote()">
+            {{ currentIndex() < 7 ? '下一句 →' : '查看最终结果 🏆' }}
+          </button>
+        }
+      </div>
+    </section>
+
+    @if (status() === 'recording') {
+      <div class="status-indicator pulse">🔴 正在聆听...请朗读上方句子</div>
+    }
+
+    @if (status() === 'scoring') {
+      <section class="result-card">
+        <div class="score" [class.low]="currentScore()! < 60" [class.med]="currentScore()! >= 60 && currentScore()! < 80" [class.high]="currentScore()! >= 80">
+          {{ currentScore() }} <span>/ 100</span>
         </div>
-      }
-
-      <div class="timer">{{ formatTime(duration()) }}</div>
-    </section>
-
-    <section class="controls">
-      @if (!hasMic()) {
-        <button class="btn primary" (click)="startMic()">🎙️ 开启麦克风</button>
-      }
-
-      @if (hasMic()) {
-        @if (isRecording()) {
-          <button class="btn" (click)="pauseRecording()">⏸ 暂停</button>
-          <button class="btn danger" (click)="stopRecording()">⏹ 停止</button>
-        }
-        @if (isPaused()) {
-          <button class="btn" (click)="resumeRecording()">▶ 继续</button>
-          <button class="btn danger" (click)="stopRecording()">⏹ 停止</button>
-        }
-        @if (isIdle()) {
-          <button class="btn success" (click)="startRecording()">🔴 开始录制</button>
-        }
-        @if (isFinished()) {
-          <button class="btn" (click)="playRecording()">▶ 播放录音</button>
-          <button class="btn primary" (click)="downloadRecording()">⬇ 下载</button>
-          <button class="btn" (click)="reset()">🔄 重新录制</button>
-        }
-      }
-    </section>
-
-    <section class="settings">
-      <label>
-        编码格式
-        <select [value]="mimeType()" (change)="mimeType.set($any($event).target.value)">
-          @for (mime of mimeOptions; track mime) {
-            <option [value]="mime">{{ mime }}</option>
-          }
-        </select>
-      </label>
-    </section>
+        <div class="transcript">
+          <strong>输入文本：</strong>{{ transcript() || '未输入' }}
+        </div>
+      </section>
+    }
 
     @if (isFinished()) {
-      <section class="playback-section">
-        <h2>录音回放</h2>
-        <!-- ✅ 使用信号绑定 src，替代原生 DOM 操作，100% 可靠 -->
-        <audio #playback [src]="playbackUrl()" controls class="audio-player"></audio>
+      <section class="final-card">
+        <h2>🎉 今日练习完成</h2>
+        <div class="avg-score">平均分：{{ avgScore() }} / 100</div>
+        <div class="breakdown">
+          @for (score of scores(); track $index) {
+            <span class="badge" [class.good]="score! >= 80" [class.bad]="score! < 60">{{ score !== null ? score : '-' }}</span>
+          }
+        </div>
+        <button class="btn primary" (click)="restart()">🔄 重新开始</button>
       </section>
     }
   </main>
 
   <footer>
-    <p>MediaRecorder API Audio Demo · 部署于 GitHub Pages</p>
+    <p>Web Speech API Demo · Angular 21 SPA</p>
   </footer>
 </div>
