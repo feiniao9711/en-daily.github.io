@@ -1,7 +1,7 @@
 <div class="app">
   <header>
     <h1>🎙️ 每日英语跟读</h1>
-    <p>每日 8 句 · 语音合成 · 智能评分</p>
+    <p>每日 8 句 · 语音合成 · 持续录音评分</p>
   </header>
 
   @if (errorMsg()) {
@@ -12,8 +12,8 @@
     <section class="quote-card">
       <div class="progress">{{ progress() }}</div>
       <blockquote>
-        <p class="text">"{{ currentQuote().content }}"</p>
-        <cite>— {{ currentQuote().author }}</cite>
+        <p class="text">"{{ currentQuote()?.content }}"</p>
+        <cite>— {{ currentQuote()?.author }}</cite>
       </blockquote>
       
       <div class="actions">
@@ -34,11 +34,16 @@
           </button>
         }
       </div>
-    </section>
 
-    @if (status() === 'recording') {
-      <div class="status-indicator pulse">🔴 正在聆听...请朗读上方句子</div>
-    }
+      @if (status() === 'recording') {
+        <div class="live-preview">
+          <span class="pulse">🔴</span> 正在聆听... 
+          @if (transcript()) {
+            <span class="transcript-text">“{{ transcript() }}”</span>
+          }
+        </div>
+      }
+    </section>
 
     @if (status() === 'scoring') {
       <section class="result-card">
@@ -46,7 +51,7 @@
           {{ currentScore() }} <span>/ 100</span>
         </div>
         <div class="transcript">
-          <strong>输入文本：</strong>{{ transcript() || '未输入' }}
+          <strong>识别/输入文本：</strong>{{ transcript() || '无' }}
         </div>
       </section>
     }

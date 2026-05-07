@@ -1,4 +1,4 @@
-import { Component, signal, computed, OnInit, OnDestroy, NgZone, ElementRef, ViewChild } from '@angular/core';
+import { Component, signal, computed, OnInit, OnDestroy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -18,8 +18,7 @@ type AppStatus = 'loading' | 'ready' | 'recording' | 'manual' | 'scoring' | 'fin
   styleUrl: './app.component.scss',
 })
 export class AppComponent implements OnInit, OnDestroy {
-  @ViewChild('playback') playbackEl!: ElementRef<HTMLAudioElement>;
-
+  // ─── 状态信号 ───
   readonly quotes = signal<Quote[]>([]);
   readonly currentIndex = signal(0);
   readonly scores = signal<number[]>([]);
@@ -29,7 +28,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly currentScore = signal<number | null>(null);
   readonly errorMsg = signal<string | null>(null);
 
-  readonly currentQuote = computed(() => this.quotes()[this.currentIndex()] || { content: '', author: '' });
+  // ─── 派生计算 ───
+  readonly currentQuote = computed(() => this.quotes()[this.currentIndex()]);
   readonly isFinished = computed(() => this.status() === 'finished');
   readonly avgScore = computed(() => {
     const valid = this.scores().filter(s => s !== null);
@@ -42,7 +42,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnInit(): void { this.loadDailyQuotes(); }
 
   async loadDailyQuotes(): Promise<void> {
-    const baseDate = new Date('2026-05-06');
+    const baseDate = new Date('2026-05-07');
     const page = Math.floor((Date.now() - baseDate.getTime()) / 86400000) + 1;
     try {
       const res = await fetch(`https://api.quotable.io/quotes?limit=8&page=${page}`);
@@ -68,13 +68,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   playTTS(): void {
     window.speechSynthesis.cancel();
-    const quote = this.currentQuote();
-    if (!quote.content) return;
-    const u = new SpeechSynthesisUtterance(quote.content);
+    const u = new SpeechSynthesisUtterance(this.currentQuote().content);
     u.lang = 'en-US'; u.rate = 0.85;
     window.speechSynthesis.speak(u);
   }
 
+  // ✅ 核心修复：持续录音模式
   startTest(): void {
     this.errorMsg.set(null);
     if (!SpeechRecognition) {
@@ -85,27 +84,44 @@ export class AppComponent implements OnInit, OnDestroy {
 
     this.recognition = new SpeechRecognition();
     this.recognition.lang = 'en-US';
-    this.recognition.interimResults = false;
-    this.recognition.continuous = false;
-    this.recognition.maxAlternatives = 1;
+    this.recognition.continuous = true; // 🔑 持续监听，不自动结束
+    this.recognition.interimResults = true; // 🔑 允许中间结果实时更新
+    this.transcript.set('');
 
-    this.recognition.onresult = (e: any) => {
-      this.transcript.set(e.results[0][0].transcript);
-      this.evaluateScore(this.transcript());
+    // 累积识别文本
+    this.recognition.onresult = (event: any) => {
+      let final = '', interim = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript + ' ';
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      this.transcript.set((final + interim).trim());
+    };
+
+    // 引擎停止时（用户点击停止或浏览器超时）触发评分
+    this.recognition.onend = () => {
+      if (this.status() === 'recording') {
+        const text = this.transcript().trim();
+        if (!text) {
+          this.errorMsg.set('未检测到语音，请靠近麦克风重试');
+          this.status.set('ready');
+        } else {
+          this.evaluateScore(text);
+        }
+      }
     };
 
     this.recognition.onerror = (e: any) => {
       if (e.error === 'network' || e.error === 'service-not-allowed') {
         this.status.set('manual');
-        this.errorMsg.set('语音识别服务暂不可用，请手动输入您朗读的句子');
-      } else {
+        this.errorMsg.set('语音识别服务暂不可用，已切换至手动输入模式');
+      } else if (e.error !== 'no-speech') {
         this.errorMsg.set(`识别错误: ${e.error}`);
         this.status.set('ready');
       }
-    };
-
-    this.recognition.onend = () => {
-      if (this.status() === 'recording') this.status.set('ready');
     };
 
     try {
@@ -116,8 +132,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  // ✅ 用户手动停止录音
   stopTest(): void {
-    if (this.recognition) this.recognition.stop();
+    if (this.recognition) {
+      this.recognition.stop(); // 触发 onend 进入评分流程
+    }
   }
 
   submitManual(): void {
@@ -125,14 +144,12 @@ export class AppComponent implements OnInit, OnDestroy {
       this.errorMsg.set('请输入内容后再提交');
       return;
     }
-    this.transcript.set(this.manualInput());
+    this.transcript.set(this.manualInput().trim());
     this.evaluateScore(this.manualInput().trim());
   }
 
   private evaluateScore(spoken: string): void {
-    const quote = this.currentQuote();
-    if (!quote.content) return;
-    const original = quote.content;
+    const original = this.currentQuote().content;
     const score = this.calculateOverlap(original, spoken);
     this.currentScore.set(score);
     const newScores = [...this.scores()];
