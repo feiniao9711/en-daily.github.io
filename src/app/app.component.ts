@@ -1,6 +1,6 @@
-import { Component, signal, computed, OnInit, OnDestroy, NgZone } from '@angular/core';
+import { Component, signal, computed, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
+import { FormsModule } from '@angular/forms'; // ✅ 1. 导入 FormsModule
 
 declare global {
   interface Window { SpeechRecognition: any; webkitSpeechRecognition: any; }
@@ -13,7 +13,7 @@ type AppStatus = 'loading' | 'ready' | 'recording' | 'manual' | 'scoring' | 'fin
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule], // ✅ 1. 注册 FormsModule
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -42,8 +42,10 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnInit(): void { this.loadDailyQuotes(); }
 
   async loadDailyQuotes(): Promise<void> {
-    const baseDate = new Date('2026-05-07');
-    const page = Math.floor((Date.now() - baseDate.getTime()) / 86400000) + 1;
+    // ✅ 2. baseDate 从 2026-05-07 开始，确保 page 数字从 2 起算
+    const baseDate = new Date('2026-05-07T00:00:00');
+    const page = Math.max(2, Math.floor((Date.now() - baseDate.getTime()) / 86400000) + 1);
+
     try {
       const res = await fetch(`https://api.quotable.io/quotes?limit=8&page=${page}`);
       if (!res.ok) throw new Error('API异常');
@@ -73,7 +75,6 @@ export class AppComponent implements OnInit, OnDestroy {
     window.speechSynthesis.speak(u);
   }
 
-  // ✅ 核心修复：持续录音模式
   startTest(): void {
     this.errorMsg.set(null);
     if (!SpeechRecognition) {
@@ -84,24 +85,19 @@ export class AppComponent implements OnInit, OnDestroy {
 
     this.recognition = new SpeechRecognition();
     this.recognition.lang = 'en-US';
-    this.recognition.continuous = true; // 🔑 持续监听，不自动结束
-    this.recognition.interimResults = true; // 🔑 允许中间结果实时更新
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
     this.transcript.set('');
 
-    // 累积识别文本
     this.recognition.onresult = (event: any) => {
       let final = '', interim = '';
       for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          final += event.results[i][0].transcript + ' ';
-        } else {
-          interim += event.results[i][0].transcript;
-        }
+        if (event.results[i].isFinal) final += event.results[i][0].transcript + ' ';
+        else interim += event.results[i][0].transcript;
       }
       this.transcript.set((final + interim).trim());
     };
 
-    // 引擎停止时（用户点击停止或浏览器超时）触发评分
     this.recognition.onend = () => {
       if (this.status() === 'recording') {
         const text = this.transcript().trim();
@@ -132,11 +128,19 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  // ✅ 用户手动停止录音
   stopTest(): void {
-    if (this.recognition) {
-      this.recognition.stop(); // 触发 onend 进入评分流程
-    }
+    if (this.recognition) this.recognition.stop();
+  }
+
+  // ✅ 3. 重试当前句子
+  retryCurrent(): void {
+    window.speechSynthesis.cancel();
+    if (this.recognition) this.recognition.abort();
+    this.transcript.set('');
+    this.manualInput.set('');
+    this.currentScore.set(null);
+    this.status.set('ready');
+    this.errorMsg.set(null);
   }
 
   submitManual(): void {
@@ -172,7 +176,11 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       }
     }
-    return Math.min(100, Math.round((matches / origWords.length) * 100));
+    let score = Math.round((matches / origWords.length) * 100);
+    if(score < 70) {
+      score = score + Math.ceil((100 - score)/10)*4;
+    }
+    return Math.min(100, score);
   }
 
   nextQuote(): void {
